@@ -1,0 +1,13 @@
+name = "family-profiles"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# KV namespace "family-profiles-PROFILES" (already created)
+[[kv_namespaces]]
+binding = "PROFILES"
+id = "814a7fada2c049bda3e9245babe8dc0b"
+
+[vars]
+STREMIO_API = "https://api.strem.io"
+# Only this Stremio email can set the addon up. Put your own email in.
+ALLOWED_EMAIL = ""
