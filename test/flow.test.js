@@ -99,7 +99,7 @@ test("full family flow", async () => {
   assert.equal(sam.id, me.id);
 
   const cat = (await call(env, `/${t}/catalog/other/profiles.json`)).body;
-  assert.deepEqual(cat.metas.map((m) => m.name), ["✓ Sam", "Kids", "Wife"]);
+  assert.deepEqual(cat.metas.map((m) => m.name), ["Sam", "Kids", "Wife"]);
   assert.equal(cat.metas[1].poster, "https://fp.example.workers.dev/posters/1f996-2fb36b.png");
   assert.match(cat.metas[0].poster, /ui-avatars/);
 
@@ -113,14 +113,16 @@ test("full family flow", async () => {
   // Switch to Kids: Sam's stuff disappears
   const sw1 = await call(env, `/${t}/meta/other/profile:${kids.id}.json`);
   assert.equal(sw1.status, 200);
-  assert.match(sw1.body.meta.description, /Switched to Kids/);
+  assert.match(sw1.body.meta.description, /Kids/);
+  assert.match(sw1.body.meta.description, /Back to Home/);
+  assert.equal(sw1.body.meta.links[0].url, "stremio:///");
   assert.deepEqual(continueWatching(api.lib), []);
   assert.deepEqual(inLibrary(api.lib), []);
   assert.ok(env.PROFILES.m.has(`backup:${t}:initial`));
 
   // Tapping Kids again does nothing
   const callsBefore = api.calls.length;
-  assert.match((await call(env, `/${t}/meta/other/profile:${kids.id}.json`)).body.meta.description, /already/);
+  assert.match((await call(env, `/${t}/meta/other/profile:${kids.id}.json`)).body.meta.description, /Kids/);
   assert.equal(api.calls.length, callsBefore);
 
   // Kids watch Bluey (the app writes a fresh item with a newer mtime)

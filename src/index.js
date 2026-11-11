@@ -69,16 +69,35 @@ function manifest(origin, token) {
 }
 
 function profileMeta(p, acct, origin) {
-  const active = p.id === acct.active;
   return {
     id: `profile:${p.id}`,
     type: "other",
-    name: active ? `✓ ${p.name}` : p.name,
+    name: p.name,
     poster: posterFor(p, origin),
     posterShape: "square",
-    description: active ? `${p.name} is the current profile.` : `Tap to switch to ${p.name}.`,
+    description: `Tap to switch to ${p.name}.`,
   };
 }
+
+const SWITCH_LINES = [
+  (n) => `${n} has entered the building. 🎬`,
+  (n) => `Remote handed to ${n}. Snacks not included. 🍿`,
+  (n) => `Plot twist: it's ${n}'s turn.`,
+  (n) => `Lights down, ${n}'s up.`,
+  (n) => `${n} is now in charge of the remote. Good luck everyone.`,
+  (n) => `Best seat on the couch is now reserved for ${n}. 🛋️`,
+  (n) => `${n}'s shows, coming right up.`,
+  (n) => `Who's watching? ${n}, apparently. 👀`,
+  (n) => `Shuffling the shows... ${n}'s stack is on top.`,
+  (n) => `${n} mode: activated. 🚀`,
+];
+const ALREADY_LINES = [
+  (n) => `You're already ${n}. Nice try. 😄`,
+  (n) => `Still ${n}. Nothing to see here.`,
+  (n) => `${n} was already holding the remote.`,
+];
+const pick = (arr, n) => arr[Math.floor(Math.random() * arr.length)](n);
+const HOME_LINK = { name: "🏠 Back to Home", category: "Profiles", url: "stremio:///" };
 
 async function doSwap(env, token, acct, toId) {
   const client = stremioClient(env.STREMIO_API, env.__fetch);
@@ -170,14 +189,14 @@ export default {
 
         let message;
         if (target.id === acct.active) {
-          message = `You're already watching as ${target.name}.`;
+          message = `${pick(ALREADY_LINES, target.name)} Tap Back to Home below.`;
         } else {
           const result = await doSwap(env, token, acct, target.id);
           message = result.busy
             ? "A switch is already running. Give it a few seconds and go back."
-            : `Switched to ${target.name}. Go back to Home to see their Continue Watching. If it hasn't changed yet, restart Stremio.`;
+            : `${pick(SWITCH_LINES, target.name)} Tap Back to Home below to see their Continue Watching.`;
         }
-        const meta = { ...profileMeta(target, acct, origin), description: message, background: posterFor(target, origin) };
+        const meta = { ...profileMeta(target, acct, origin), description: message, background: posterFor(target, origin), links: [HOME_LINK] };
         return json({ meta, cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 }, 200, noStore);
       }
 
