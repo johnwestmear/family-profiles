@@ -37,6 +37,21 @@ export function stremioClient(baseUrl = "https://api.strem.io", fetchImpl = (...
       return Array.isArray(result) ? result : [];
     },
 
+    // Home rows follow the order of the account's installed addons.
+    async moveAddonToTop(authKey, manifestUrl) {
+      const result = await call("addonCollectionGet", { authKey, update: true });
+      const addons = result?.addons || [];
+      const tail = manifestUrl.replace(/^[a-z]+:\/\//i, "");
+      const idx = addons.findIndex((a) => (a.transportUrl || "").replace(/^[a-z]+:\/\//i, "") === tail);
+      if (idx < 0) return false;
+      if (idx > 0) {
+        const [mine] = addons.splice(idx, 1);
+        addons.unshift(mine);
+        await call("addonCollectionSet", { authKey, addons });
+      }
+      return true;
+    },
+
     async putLibrary(authKey, changes, chunkSize = 200) {
       for (let i = 0; i < changes.length; i += chunkSize) {
         await call("datastorePut", {

@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.js",
+    "posters": "node scripts/build-posters.mjs",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@twemoji/svg": "^15.0.0",
     "wrangler": "^4.0.0"
   }
 }

@@ -11,3 +11,7 @@ id = "814a7fada2c049bda3e9245babe8dc0b"
 STREMIO_API = "https://api.strem.io"
 # Only this Stremio email can set the addon up.
 ALLOWED_EMAIL = "samtarrant12@gmail.com"
+
+# Pre-rendered emoji profile tiles (scripts/build-posters.mjs)
+[assets]
+directory = "./public"

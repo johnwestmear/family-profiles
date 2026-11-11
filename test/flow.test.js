@@ -18,6 +18,7 @@ function fakeKV() {
 function fakeStremio() {
   const lib = new Map();
   const calls = [];
+  const addons = [{ transportUrl: "https://v3-cinemeta.strem.io/manifest.json" }, { transportUrl: "https://torrentio.example/manifest.json" }];
   const fetchImpl = async (url, init) => {
     const method = url.split("/api/")[1];
     const body = JSON.parse(init.body);
@@ -28,6 +29,8 @@ function fakeStremio() {
       return ok({ authKey: "AK", user: { email: body.email } });
     }
     if (body.authKey !== "AK") return new Response(JSON.stringify({ error: { message: "Session expired" } }));
+    if (method === "addonCollectionGet") return ok({ addons: addons.map((a) => ({ ...a })) });
+    if (method === "addonCollectionSet") { addons.splice(0, addons.length, ...body.addons); return ok({ success: true }); }
     if (method === "datastoreGet") return ok([...lib.values()].map((x) => structuredClone(x)));
     if (method === "datastorePut") {
       for (const c of body.changes) {
@@ -38,7 +41,7 @@ function fakeStremio() {
     }
     return new Response("nope", { status: 404 });
   };
-  return { lib, calls, fetchImpl };
+  return { lib, calls, fetchImpl, addons };
 }
 
 function item(id, name, mtime, state = {}) {
@@ -87,13 +90,25 @@ test("full family flow", async () => {
   // Add profiles
   const acct0 = JSON.parse(env.PROFILES.m.get(`acct:${t}`));
   const me = acct0.profiles[0];
-  const saved = await call(env, `/${t}/api/profiles`, post({ profiles: [{ ...me, name: "Sam" }, { name: "Kids", colour: "2fb36b" }, { name: "Wife" }] }));
+  const saved = await call(env, `/${t}/api/profiles`, post({ profiles: [{ ...me, name: "Sam" }, { name: "Kids", colour: "2fb36b", emoji: "🦖" }, { name: "Bad", emoji: "💩", colour: "zzz" }, { name: "Wife" }] }));
   assert.equal(saved.status, 200);
-  const [sam, kids, wife] = saved.body.profiles;
+  const [sam, kids, junk, wife] = saved.body.profiles;
+  assert.equal(junk.emoji, "", "emoji outside the list is dropped");
+  assert.equal(junk.colour.length, 6);
+  await call(env, `/${t}/api/profiles`, post({ profiles: [sam, kids, wife] }));
   assert.equal(sam.id, me.id);
 
   const cat = (await call(env, `/${t}/catalog/other/profiles.json`)).body;
   assert.deepEqual(cat.metas.map((m) => m.name), ["✓ Sam", "Kids", "Wife"]);
+  assert.equal(cat.metas[1].poster, "https://fp.example.workers.dev/posters/1f996-2fb36b.png");
+  assert.match(cat.metas[0].poster, /ui-avatars/);
+
+  // Move to top: fails before install, works after
+  assert.equal((await call(env, `/${t}/api/move-to-top`, post({}))).status, 404);
+  api.addons.push({ transportUrl: `https://fp.example.workers.dev/${t}/manifest.json` });
+  assert.equal((await call(env, `/${t}/api/move-to-top`, post({}))).status, 200);
+  assert.equal(api.addons[0].transportUrl, `https://fp.example.workers.dev/${t}/manifest.json`);
+  assert.equal(api.addons.length, 3);
 
   // Switch to Kids: Sam's stuff disappears
   const sw1 = await call(env, `/${t}/meta/other/profile:${kids.id}.json`);

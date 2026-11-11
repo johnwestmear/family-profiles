@@ -1,10 +1,10 @@
 import { stremioClient, StremioError } from "./stremio.js";
 import { planSwap } from "./swap.js";
 import { setupPage, configurePage } from "./pages.js";
+import { EMOJI, COLOURS, emojiCode } from "./emoji.js";
 
 const VERSION = "1.0.0";
 const MAX_PROFILES = 12;
-const COLOURS = ["e50914", "1f80e0", "2fb36b", "f5a623", "9b51e0", "e84393", "00a8a8", "6c757d"];
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -46,8 +46,9 @@ async function getSnap(env, token, pid) {
 }
 
 // ---------- addon pieces ----------
-function posterFor(profile) {
+function posterFor(profile, origin) {
   if (profile.image) return profile.image;
+  if (profile.emoji && EMOJI.includes(profile.emoji)) return `${origin}/posters/${emojiCode(profile.emoji)}-${profile.colour}.png`;
   const name = encodeURIComponent(profile.name);
   return `https://ui-avatars.com/api/?name=${name}&background=${profile.colour}&color=ffffff&size=512&bold=true&format=png`;
 }
@@ -67,13 +68,13 @@ function manifest(origin, token) {
   };
 }
 
-function profileMeta(p, acct) {
+function profileMeta(p, acct, origin) {
   const active = p.id === acct.active;
   return {
     id: `profile:${p.id}`,
     type: "other",
     name: active ? `✓ ${p.name}` : p.name,
-    poster: posterFor(p),
+    poster: posterFor(p, origin),
     posterShape: "square",
     description: active ? `${p.name} is the current profile.` : `Tap to switch to ${p.name}.`,
   };
@@ -136,7 +137,7 @@ export default {
         const client = stremioClient(env.STREMIO_API, env.__fetch);
         const { authKey, email: realEmail } = await client.login(email.trim(), password);
         const token = newToken();
-        const first = { id: newProfileId(), name: "Me", colour: COLOURS[0], image: "" };
+        const first = { id: newProfileId(), name: "Me", colour: COLOURS[0], emoji: "", image: "" };
         await putAccount(env, token, {
           email: realEmail,
           authKey,
@@ -155,10 +156,10 @@ export default {
 
       if (rest[0] === "manifest.json") return json(manifest(origin, token), 200, noStore);
 
-      if (rest[0] === "configure") return html(configurePage({ origin, token, acct, max: MAX_PROFILES, colours: COLOURS }));
+      if (rest[0] === "configure") return html(configurePage({ origin, token, acct, max: MAX_PROFILES, colours: COLOURS, emoji: EMOJI }));
 
       if (rest[0] === "catalog" && rest[1] === "other" && rest[2]?.startsWith("profiles")) {
-        return json({ metas: acct.profiles.map((p) => profileMeta(p, acct)), cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 }, 200, noStore);
+        return json({ metas: acct.profiles.map((p) => profileMeta(p, acct, origin)), cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 }, 200, noStore);
       }
 
       if (rest[0] === "meta" && rest[1] === "other" && rest[2]) {
@@ -176,7 +177,7 @@ export default {
             ? "A switch is already running. Give it a few seconds and go back."
             : `Switched to ${target.name}. Go back to Home to see their Continue Watching. If it hasn't changed yet, restart Stremio.`;
         }
-        const meta = { ...profileMeta(target, acct), description: message, background: posterFor(target) };
+        const meta = { ...profileMeta(target, acct, origin), description: message, background: posterFor(target, origin) };
         return json({ meta, cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 }, 200, noStore);
       }
 
@@ -187,7 +188,8 @@ export default {
           .map((p, i) => ({
             id: /^[a-f0-9]{8}$/.test(p.id || "") ? p.id : newProfileId(),
             name: String(p.name || "").trim().slice(0, 24),
-            colour: /^[0-9a-f]{6}$/i.test(p.colour || "") ? p.colour.toLowerCase() : COLOURS[i % COLOURS.length],
+            colour: COLOURS.includes(String(p.colour || "").toLowerCase()) ? p.colour.toLowerCase() : COLOURS[i % COLOURS.length],
+            emoji: EMOJI.includes(p.emoji) ? p.emoji : "",
             image: /^https:\/\//.test(p.image || "") ? p.image : "",
           }))
           .filter((p) => p.name);
@@ -200,6 +202,14 @@ export default {
         acct.profiles = clean;
         await putAccount(env, token, acct);
         return json({ ok: true, profiles: clean });
+      }
+
+      if (rest[0] === "api" && rest[1] === "move-to-top" && request.method === "POST") {
+        const client = stremioClient(env.STREMIO_API, env.__fetch);
+        const mine = `${origin}/${token}/manifest.json`;
+        const moved = await client.moveAddonToTop(acct.authKey, mine);
+        if (!moved) return json({ error: "Couldn't find Family Profiles in your installed addons. Install it first." }, 404);
+        return json({ ok: true });
       }
 
       if (rest[0] === "api" && rest[1] === "relogin" && request.method === "POST") {
