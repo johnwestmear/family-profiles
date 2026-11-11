@@ -38,17 +38,17 @@ export function stremioClient(baseUrl = "https://api.strem.io", fetchImpl = (...
     },
 
     // Home rows follow the order of the account's installed addons.
-    async moveAddonToTop(authKey, manifestUrl) {
+    async moveAddonToTop(authKey, manifestUrl, freshManifest) {
       const result = await call("addonCollectionGet", { authKey, update: true });
       const addons = result?.addons || [];
       const tail = manifestUrl.replace(/^[a-z]+:\/\//i, "");
       const idx = addons.findIndex((a) => (a.transportUrl || "").replace(/^[a-z]+:\/\//i, "") === tail);
       if (idx < 0) return false;
-      if (idx > 0) {
-        const [mine] = addons.splice(idx, 1);
-        addons.unshift(mine);
-        await call("addonCollectionSet", { authKey, addons });
-      }
+      const [mine] = addons.splice(idx, 1);
+      // Also refresh the stored manifest so new rows (like Picked for You) appear.
+      if (freshManifest) mine.manifest = freshManifest;
+      addons.unshift(mine);
+      await call("addonCollectionSet", { authKey, addons });
       return true;
     },
 

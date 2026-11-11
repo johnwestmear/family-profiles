@@ -51,6 +51,13 @@ The first profile owns everything that's currently on the account. Rename it to 
 
 If step 3 or 5 doesn't work, download the latest backup from the settings page and let me know what you saw.
 
+## Extras on the settings page
+
+- **Who's watching?** Switch profiles from your phone. The TV follows after a refresh.
+- **Watch stats.** Hours per person (all time and this week) and their top shows. The weekly number starts the day after setup.
+- **Picked for You.** Paste a free TMDB API key to get movie and show rows based on what the current person watches, then press *Move to top and refresh*.
+- **Auto switch-back.** Switch to one profile at a set time every day (Sydney time, checked every 10 minutes).
+
 ## Good to know
 
 - **Take turns.** It's one account, so two people watching at once on different devices will mix their progress.

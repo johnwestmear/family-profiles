@@ -15,3 +15,7 @@ ALLOWED_EMAIL = "samtarrant12@gmail.com"
 # Pre-rendered emoji profile tiles (scripts/build-posters.mjs)
 [assets]
 directory = "./public"
+
+# Daily stats snapshot + auto switch-back check
+[triggers]
+crons = ["*/10 * * * *"]

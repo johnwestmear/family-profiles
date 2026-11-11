@@ -23,7 +23,7 @@ const BLANK_STATE = {
   watched: null,
 };
 
-function isHidden(item) {
+export function isHidden(item) {
   const s = item.state || {};
   return (
     item.removed === true &&

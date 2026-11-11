@@ -1,9 +1,11 @@
 import { stremioClient, StremioError } from "./stremio.js";
-import { planSwap } from "./swap.js";
+import { planSwap, isHidden } from "./swap.js";
+import { buildRecs, pickSeeds, checkTmdbKey } from "./recs.js";
+import { summarise, profileItems, weekDelta, sydneyNow, shiftDate } from "./stats.js";
 import { setupPage, configurePage } from "./pages.js";
 import { EMOJI, COLOURS, emojiCode } from "./emoji.js";
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 const MAX_PROFILES = 12;
 
 const CORS = {
@@ -35,6 +37,8 @@ function newProfileId() {
 const acctKey = (t) => `acct:${t}`;
 const snapKey = (t, p) => `snap:${t}:${p}`;
 const backupKey = (t, which) => `backup:${t}:${which}`;
+const recsKey = (t, p) => `recs:${t}:${p}`;
+const statsKey = (t) => `stats:${t}`;
 
 async function getAccount(env, token) {
   if (!/^[a-f0-9]{36}$/.test(token)) return null;
@@ -53,7 +57,11 @@ function posterFor(profile, origin) {
   return `https://ui-avatars.com/api/?name=${name}&background=${profile.colour}&color=ffffff&size=512&bold=true&format=png`;
 }
 
-function manifest(origin, token) {
+function manifest(origin, acct) {
+  const catalogs = [{ type: "other", id: "profiles", name: "Switch Profile" }];
+  if (acct.tmdbKey) {
+    catalogs.push({ type: "movie", id: "picked", name: "Picked for You" }, { type: "series", id: "picked", name: "Picked for You" });
+  }
   return {
     id: "community.family.profileswitcher",
     version: VERSION,
@@ -61,9 +69,8 @@ function manifest(origin, token) {
     description: "Separate Library and Continue Watching for each person on one Stremio account.",
     logo: `https://ui-avatars.com/api/?name=FP&background=e50914&color=ffffff&size=256&bold=true&format=png`,
     resources: ["catalog", { name: "meta", types: ["other"], idPrefixes: ["profile:"] }],
-    types: ["other"],
-    idPrefixes: ["profile:"],
-    catalogs: [{ type: "other", id: "profiles", name: "Switch Profile" }],
+    types: ["other", "movie", "series"],
+    catalogs,
     behaviorHints: { configurable: true, configurationRequired: false },
   };
 }
@@ -137,8 +144,103 @@ async function doSwap(env, token, acct, toId) {
   }
 }
 
+async function getRecs(env, token, acct) {
+  const cached = await env.PROFILES.get(recsKey(token, acct.active), "json");
+  if (cached) return cached;
+  const client = stremioClient(env.STREMIO_API, env.__fetch);
+  const items = (await client.getLibrary(acct.authKey)).filter((i) => !isHidden(i));
+  const recs = await buildRecs({
+    key: acct.tmdbKey,
+    seeds: pickSeeds(items),
+    exclude: items.map((i) => i._id),
+    fetchImpl: env.__fetch || ((...a) => fetch(...a)),
+  });
+  // Six hours is plenty: Stremio only re-reads Home rows on refresh anyway.
+  await env.PROFILES.put(recsKey(token, acct.active), JSON.stringify(recs), { expirationTtl: 6 * 3600 });
+  return recs;
+}
+async function clearRecs(env, token, acct) {
+  for (const p of acct.profiles) await env.PROFILES.delete(recsKey(token, p.id));
+}
+
+async function profileTotals(env, token, acct, accountItems) {
+  const out = {};
+  for (const p of acct.profiles) {
+    const snapshot = p.id === acct.active ? [] : await getSnap(env, token, p.id);
+    out[p.id] = summarise(profileItems({ profile: p, acct, accountItems, snapshot, isHidden }));
+  }
+  return out;
+}
+
+async function buildStats(env, token, acct) {
+  const client = stremioClient(env.STREMIO_API, env.__fetch);
+  const accountItems = await client.getLibrary(acct.authKey);
+  const totals = await profileTotals(env, token, acct, accountItems);
+  const history = (await env.PROFILES.get(statsKey(token), "json")) || {};
+  const { day } = sydneyNow();
+  return {
+    profiles: acct.profiles.map((p) => {
+      const t = totals[p.id];
+      const week = weekDelta(history, day, p.id, t.totalMs);
+      return {
+        id: p.id,
+        name: p.name,
+        totalHours: +(t.totalMs / 3.6e6).toFixed(1),
+        week: week ? { hours: +(week.ms / 3.6e6).toFixed(1), sinceDay: week.sinceDay, fullWeek: week.fullWeek } : null,
+        top: t.top,
+        lastWatched: t.lastWatched,
+      };
+    }),
+  };
+}
+
+// Runs every 10 minutes (see wrangler.toml).
+async function runScheduled(env, now = Date.now()) {
+  const { day, minutes } = sydneyNow(now);
+  const list = await env.PROFILES.list({ prefix: "acct:" });
+  for (const k of list.keys) {
+    const token = k.name.slice(5);
+    const acct = await getAccount(env, token);
+    if (!acct) continue;
+    try {
+      // Daily watch-time snapshot for "this week" stats.
+      const history = (await env.PROFILES.get(statsKey(token), "json")) || {};
+      if (!history[day]) {
+        const client = stremioClient(env.STREMIO_API, env.__fetch);
+        const totals = await profileTotals(env, token, acct, await client.getLibrary(acct.authKey));
+        history[day] = Object.fromEntries(Object.entries(totals).map(([id, t]) => [id, t.totalMs]));
+        const keep = shiftDate(day, -35);
+        for (const d of Object.keys(history)) if (d < keep) delete history[d];
+        await env.PROFILES.put(statsKey(token), JSON.stringify(history));
+      }
+
+      // Auto switch-back.
+      const a = acct.auto;
+      if (a?.enabled && a.lastRun !== day) {
+        const [h, m] = a.time.split(":").map(Number);
+        if (minutes >= h * 60 + m) {
+          if (acct.active !== a.profileId && acct.profiles.some((p) => p.id === a.profileId)) {
+            await doSwap(env, token, acct, a.profileId);
+          }
+          acct.auto.lastRun = day;
+          await putAccount(env, token, acct);
+        }
+      }
+    } catch (err) {
+      console.log(`scheduled run failed for an account: ${err.message}`);
+    }
+  }
+}
+
 // ---------- router ----------
 export default {
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runScheduled(env, event.scheduledTime));
+  },
+
+  // exposed for tests
+  _runScheduled: runScheduled,
+
   async fetch(request, env) {
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
     const url = new URL(request.url);
@@ -173,12 +275,17 @@ export default {
       if (!acct) return json({ error: "Unknown install link" }, 404);
       const rest = parts.slice(1);
 
-      if (rest[0] === "manifest.json") return json(manifest(origin, token), 200, noStore);
+      if (rest[0] === "manifest.json") return json(manifest(origin, acct), 200, noStore);
 
       if (rest[0] === "configure") return html(configurePage({ origin, token, acct, max: MAX_PROFILES, colours: COLOURS, emoji: EMOJI }));
 
       if (rest[0] === "catalog" && rest[1] === "other" && rest[2]?.startsWith("profiles")) {
         return json({ metas: acct.profiles.map((p) => profileMeta(p, acct, origin)), cacheMaxAge: 0, staleRevalidate: 0, staleError: 0 }, 200, noStore);
+      }
+
+      if (rest[0] === "catalog" && (rest[1] === "movie" || rest[1] === "series") && rest[2]?.startsWith("picked")) {
+        const recs = acct.tmdbKey ? await getRecs(env, token, acct) : { movie: [], series: [] };
+        return json({ metas: recs[rest[1]] || [], cacheMaxAge: 3600, staleRevalidate: 3600 });
       }
 
       if (rest[0] === "meta" && rest[1] === "other" && rest[2]) {
@@ -226,9 +333,47 @@ export default {
       if (rest[0] === "api" && rest[1] === "move-to-top" && request.method === "POST") {
         const client = stremioClient(env.STREMIO_API, env.__fetch);
         const mine = `${origin}/${token}/manifest.json`;
-        const moved = await client.moveAddonToTop(acct.authKey, mine);
+        const moved = await client.moveAddonToTop(acct.authKey, mine, manifest(origin, acct));
         if (!moved) return json({ error: "Couldn't find Family Profiles in your installed addons. Install it first." }, 404);
         return json({ ok: true });
+      }
+
+      if (rest[0] === "api" && rest[1] === "switch" && request.method === "POST") {
+        const { id } = await request.json();
+        const target = acct.profiles.find((p) => p.id === id);
+        if (!target) return json({ error: "Unknown profile" }, 404);
+        if (target.id === acct.active) return json({ ok: true, active: acct.active, message: pick(ALREADY_LINES, target.name) });
+        const result = await doSwap(env, token, acct, target.id);
+        if (result.busy) return json({ error: "A switch is already running. Try again in a few seconds." }, 409);
+        return json({ ok: true, active: acct.active, message: pick(SWITCH_LINES, target.name) });
+      }
+
+      if (rest[0] === "api" && rest[1] === "stats" && request.method === "GET") {
+        return json(await buildStats(env, token, acct), 200, noStore);
+      }
+
+      if (rest[0] === "api" && rest[1] === "settings" && request.method === "POST") {
+        const body = await request.json();
+        if ("tmdbKey" in body) {
+          const key = String(body.tmdbKey || "").trim();
+          if (key) {
+            try { await checkTmdbKey(key, env.__fetch || ((...a) => fetch(...a))); }
+            catch { return json({ error: "TMDB didn't accept that key. Copy the API Key or the Read Access Token from TMDB's API settings page." }, 400); }
+          }
+          acct.tmdbKey = key;
+          await clearRecs(env, token, acct);
+        }
+        if (body.auto) {
+          const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(body.auto.time || "") ? body.auto.time : "21:00";
+          const profileId = acct.profiles.some((p) => p.id === body.auto.profileId) ? body.auto.profileId : acct.profiles[0].id;
+          const { day, minutes } = sydneyNow();
+          const [h, m] = time.split(":").map(Number);
+          // If today's time has already passed, start from tomorrow.
+          const lastRun = minutes >= h * 60 + m ? day : acct.auto?.lastRun || null;
+          acct.auto = { enabled: !!body.auto.enabled, profileId, time, lastRun };
+        }
+        await putAccount(env, token, acct);
+        return json({ ok: true, hasTmdb: !!acct.tmdbKey, auto: acct.auto || null });
       }
 
       if (rest[0] === "api" && rest[1] === "relogin" && request.method === "POST") {

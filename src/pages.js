@@ -28,6 +28,18 @@ const style = `
   code { background: #1f1f1f; padding: 10px 12px; border-radius: 8px; display: block; word-break: break-all; font-size: 13px; color: #ccc; }
   .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
   .note { color: #888; font-size: 14px; }
+  .who { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 12px; }
+  .who button { background: #1f1f1f; padding: 10px; border-radius: 10px; display: grid; justify-items: center; gap: 6px; border: 2px solid transparent; color: #eee; font-weight: 600; }
+  .who button.on { border-color: #2fb36b; }
+  .who .avatar { width: 64px; height: 64px; }
+  .who small { color: #2fb36b; font-size: 11px; font-weight: 700; min-height: 14px; }
+  .stat { background: #1f1f1f; border-radius: 10px; padding: 14px; }
+  .stat h3 { margin: 0 0 6px; font-size: 16px; display: flex; gap: 10px; align-items: center; }
+  .stat .big { font-size: 22px; font-weight: 700; }
+  .stat ol { margin: 8px 0 0; padding-left: 20px; color: #ccc; font-size: 14px; }
+  select, input[type=time] { width: auto; padding: 10px; border-radius: 8px; border: 1px solid #333; background: #1f1f1f; color: #eee; font-size: 15px; }
+  .check { display: flex; gap: 10px; align-items: center; color: #ddd; margin: 10px 0; }
+  .check input { width: 20px; height: 20px; }
   .pick { background: #2a2a2a; color: #ddd; font-weight: 500; padding: 6px 10px; font-size: 13px; }
   .emojis { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 4px; background: #181818; border-radius: 8px; padding: 8px; }
   .emojis button { background: none; font-size: 24px; padding: 4px 0; border-radius: 6px; border: 2px solid transparent; }
@@ -66,11 +78,16 @@ document.getElementById('f').addEventListener('submit', async (e) => {
 export function configurePage({ origin, token, acct, max, colours, emoji }) {
   const httpsUrl = `${origin}/${token}/manifest.json`;
   const stremioUrl = httpsUrl.replace(/^https?:\/\//, "stremio://");
-  const data = JSON.stringify({ profiles: acct.profiles, active: acct.active, max, colours, emoji }).replace(/</g, "\\u003c");
+  const data = JSON.stringify({ profiles: acct.profiles, active: acct.active, max, colours, emoji, hasTmdb: !!acct.tmdbKey, auto: acct.auto || null }).replace(/</g, "\\u003c");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Family Profiles</title><style>${style}</style></head><body><main>
 <h1>Family Profiles</h1>
 <p class="lead">Signed in as ${esc(acct.email)}. Add a profile for each person, then install the addon.</p>
+
+<h2>Who's watching?</h2>
+<div class="who" id="who"></div>
+<div class="msg" id="msgw"></div>
+<p class="note">Switches the whole account, so the TV follows. Refresh or reopen Stremio to see it.</p>
 
 <h2>Profiles</h2>
 <div class="grid" id="list"></div>
@@ -91,9 +108,25 @@ export function configurePage({ origin, token, acct, max, colours, emoji }) {
 <p class="note">Keep this link private. Anyone who has it can switch profiles on your account.</p>
 
 <h2>Put Switch Profile at the top of Home</h2>
-<p class="note">Stremio orders Home rows by addon order. This moves Family Profiles to first place. Restart Stremio afterwards to see it.</p>
-<div class="actions"><button class="ghost" id="top">Move to top</button></div>
+<p class="note">Stremio orders Home rows by addon order. This moves Family Profiles to first place, under Continue Watching, and loads any new rows. Restart Stremio afterwards to see it.</p>
+<div class="actions"><button class="ghost" id="top">Move to top and refresh</button></div>
 <div class="msg" id="msg3"></div>
+
+<h2>Watch stats</h2>
+<div class="grid" id="stats"><p class="note">Loading...</p></div>
+
+<h2>Picked for You</h2>
+<p class="note">Adds movie and show rows to Home, based on what the current person has been watching. Needs a free TMDB key: sign up at themoviedb.org, then go to <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener" style="color:#ccc">Settings &gt; API</a> and copy the API Key.</p>
+<label for="tmdb">TMDB key</label><input id="tmdb" placeholder="${acct.tmdbKey ? "Key saved. Paste a new one to replace it" : "Paste your TMDB API key"}">
+<div class="actions"><button class="ghost" id="tmdbsave">Save key</button>${acct.tmdbKey ? '<button class="ghost" id="tmdbclear">Turn off</button>' : ""}</div>
+<div class="msg" id="msg4"></div>
+
+<h2>Auto switch-back</h2>
+<p class="note">Every day at this time, switch back to one profile. Handy so tomorrow doesn't start on the kids' shows.</p>
+<label class="check"><input type="checkbox" id="autoon"> Turn on</label>
+<div class="row"><select id="autoprof"></select> at <input type="time" id="autotime"></div>
+<div class="actions"><button class="ghost" id="autosave">Save</button></div>
+<div class="msg" id="msg5"></div>
 
 <h2>Safety net</h2>
 <p class="note">A copy of the whole library is saved before every switch.</p>
@@ -172,7 +205,7 @@ async function post(path, body) {
 }
 document.getElementById('save').onclick = async () => {
   const msg = document.getElementById('msg'); msg.className = 'msg'; msg.textContent = 'Saving...';
-  try { const d = await post('profiles', { profiles: S.profiles }); S.profiles = d.profiles; render(); msg.className = 'msg ok'; msg.textContent = 'Saved. Stremio picks up changes next time you open Home.'; }
+  try { const d = await post('profiles', { profiles: S.profiles }); S.profiles = d.profiles; render(); renderWho(); renderAuto(); msg.className = 'msg ok'; msg.textContent = 'Saved. Stremio picks up changes next time you open Home.'; }
   catch (e) { msg.textContent = e.message; }
 };
 document.getElementById('copy').onclick = async () => {
@@ -188,6 +221,84 @@ document.getElementById('relogin').onclick = async () => {
   try { await post('relogin', { password: document.getElementById('pw').value }); msg.className = 'msg ok'; msg.textContent = 'Reconnected.'; }
   catch (e) { msg.textContent = e.message; }
 };
-render();
+function renderWho() {
+  const w = document.getElementById('who'); w.innerHTML = '';
+  S.profiles.filter(p => p.id).forEach(p => {
+    const b = document.createElement('button'); if (p.id === S.active) b.className = 'on';
+    const av = document.createElement('div'); av.className = 'avatar'; paint(av, p);
+    const n = document.createElement('div'); n.textContent = p.name;
+    const st = document.createElement('small'); st.textContent = p.id === S.active ? 'WATCHING' : '';
+    b.append(av, n, st);
+    b.onclick = async () => {
+      const msg = document.getElementById('msgw'); msg.className = 'msg'; msg.textContent = 'Switching to ' + p.name + '...';
+      w.querySelectorAll('button').forEach(x => x.disabled = true);
+      try { const d = await post('switch', { id: p.id }); S.active = d.active; msg.className = 'msg ok'; msg.textContent = d.message; render(); renderWho(); loadStats(); }
+      catch (e) { msg.textContent = e.message; renderWho(); }
+    };
+    w.appendChild(b);
+  });
+}
+function fmtDay(d) { return new Date(d + 'T00:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short' }); }
+async function loadStats() {
+  const box = document.getElementById('stats');
+  try {
+    const r = await fetch('/${token}/api/stats'); const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Could not load stats');
+    box.innerHTML = '';
+    d.profiles.forEach(p => {
+      const prof = S.profiles.find(x => x.id === p.id) || p;
+      const el = document.createElement('div'); el.className = 'stat';
+      const h = document.createElement('h3'); const av = document.createElement('div'); av.className = 'avatar'; av.style.width = av.style.height = '32px'; av.style.fontSize = '14px'; paint(av, prof);
+      const nm = document.createElement('span'); nm.textContent = p.name; h.append(av, nm);
+      const big = document.createElement('div'); big.className = 'big';
+      big.textContent = p.totalHours + ' hrs all time';
+      const sub = document.createElement('div'); sub.className = 'note';
+      const bits = [];
+      if (p.week) bits.push(p.week.hours + ' hrs ' + (p.week.fullWeek ? 'this week' : 'since ' + fmtDay(p.week.sinceDay)));
+      else bits.push('Weekly total starts tomorrow');
+      if (p.lastWatched) bits.push('last watched ' + p.lastWatched.name);
+      sub.textContent = bits.join(' · ');
+      el.append(h, big, sub);
+      if (p.top.length) {
+        const ol = document.createElement('ol');
+        p.top.forEach(t => { const li = document.createElement('li'); li.textContent = t.name + ' (' + t.hours + ' hrs)'; ol.appendChild(li); });
+        el.appendChild(ol);
+      }
+      box.appendChild(el);
+    });
+  } catch (e) { box.innerHTML = ''; const n = document.createElement('p'); n.className = 'note'; n.textContent = e.message; box.appendChild(n); }
+}
+function renderAuto() {
+  const sel = document.getElementById('autoprof'); sel.innerHTML = '';
+  S.profiles.filter(p => p.id).forEach(p => { const o = document.createElement('option'); o.value = p.id; o.textContent = p.name; sel.appendChild(o); });
+  const a = S.auto || {};
+  document.getElementById('autoon').checked = !!a.enabled;
+  sel.value = a.profileId || (S.profiles[0] && S.profiles[0].id) || '';
+  document.getElementById('autotime').value = a.time || '21:00';
+}
+document.getElementById('autosave').onclick = async () => {
+  const msg = document.getElementById('msg5'); msg.className = 'msg'; msg.textContent = 'Saving...';
+  try {
+    const d = await post('settings', { auto: { enabled: document.getElementById('autoon').checked, profileId: document.getElementById('autoprof').value, time: document.getElementById('autotime').value } });
+    S.auto = d.auto; msg.className = 'msg ok';
+    const who = (S.profiles.find(p => p.id === d.auto.profileId) || {}).name;
+    const [hh, mm] = d.auto.time.split(':').map(Number);
+    const nice = ((hh % 12) || 12) + ':' + String(mm).padStart(2, '0') + (hh < 12 ? ' am' : ' pm');
+    msg.textContent = d.auto.enabled ? 'Saved. Switches to ' + who + ' every day at ' + nice + '.' : 'Saved. Auto switch-back is off.';
+  } catch (e) { msg.textContent = e.message; }
+};
+document.getElementById('tmdbsave').onclick = async () => {
+  const msg = document.getElementById('msg4'); const key = document.getElementById('tmdb').value.trim();
+  if (!key) { msg.className = 'msg'; msg.textContent = 'Paste a key first.'; return; }
+  msg.className = 'msg'; msg.textContent = 'Checking key with TMDB...';
+  try { await post('settings', { tmdbKey: key }); msg.className = 'msg ok'; msg.textContent = 'Key works. Now press Move to top and refresh, then restart Stremio to see the new rows.'; document.getElementById('tmdb').value = ''; }
+  catch (e) { msg.textContent = e.message; }
+};
+const clr = document.getElementById('tmdbclear');
+if (clr) clr.onclick = async () => {
+  const msg = document.getElementById('msg4');
+  try { await post('settings', { tmdbKey: '' }); msg.className = 'msg ok'; msg.textContent = 'Turned off. Press Move to top and refresh to remove the rows.'; }
+  catch (e) { msg.textContent = e.message; }
+};
+render(); renderWho(); renderAuto(); loadStats();
 </script></main></body></html>`;
 }
